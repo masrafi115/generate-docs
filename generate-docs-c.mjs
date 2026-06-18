@@ -2,6 +2,7 @@
 
 /**
  * Universal Node-Native Tree-Sitter AST Documentation & Outline Parser
+ * Supports: C, C++, PHP, Go, Python, Dart, and Rust (.rs)
  */
 
 import fs from 'fs';
@@ -10,7 +11,6 @@ import os from 'os';
 import { globSync } from 'glob';
 import { createRequire } from 'module';
 
-// Use createRequire to load native C++ node bindings cleanly
 const require = createRequire(import.meta.url);
 const Parser = require('tree-sitter');
 
@@ -32,8 +32,12 @@ const ROOT_DIR = process.cwd();
 const PROJECT_NAME = path.basename(ROOT_DIR);
 const OBSIDIAN_VAULT_NAME = "Codes Snippets Flashcards Diagrams";
 
-const files = globSync('**/*.{c,cpp,h,hpp,php,go,py,dart}', {
-    ignore: ['node_modules/**', 'dist/**', 'build/**', '.dart_tool/**', '.docs_output/**', 'venv/**', '.git/**']
+// ⚡ ADDED: Added '.rs' to the search matcher extension pool
+const files = globSync('**/*.{c,cpp,h,hpp,php,go,py,dart,rs}', {
+    ignore: [
+        'node_modules/**', 'dist/**', 'build/**', '.dart_tool/**', 
+        '.docs_output/**', 'venv/**', '.git/**', 'target/**' // Added rust 'target' build folder to ignore list
+    ]
 });
 
 if (files.length === 0) {
@@ -41,7 +45,7 @@ if (files.length === 0) {
     process.exit(0);
 }
 
-// Map extensions directly to their npm language package names
+// ⚡ ADDED: Map .rs extension directly to the tree-sitter-rust npm language package
 const LANGUAGE_PACKAGES = {
     '.py': 'tree-sitter-python',
     '.go': 'tree-sitter-go',
@@ -50,19 +54,34 @@ const LANGUAGE_PACKAGES = {
     '.c': 'tree-sitter-c',
     '.cpp': 'tree-sitter-cpp',
     '.h': 'tree-sitter-c',
-    '.hpp': 'tree-sitter-cpp'
+    '.hpp': 'tree-sitter-cpp',
+    '.rs': 'tree-sitter-rust' 
 };
 
 const getStructuralLabel = (nodeType) => {
     const type = nodeType.toLowerCase();
-    if (['class_definition', 'struct_specifier', 'type_declaration', 'trait_declaration', 'interface_declaration'].includes(type)) {
-        return 'Class/Struct';
+    
+    // ⚡ UPDATED: Added rust tokens 'struct_item', 'enum_item', 'union_item', 'impl_item', and 'trait_item'
+    if ([
+        'class_definition', 'struct_specifier', 'type_declaration', 
+        'trait_declaration', 'interface_declaration',
+        'struct_item', 'enum_item', 'union_item', 'impl_item', 'trait_item'
+    ].includes(type)) {
+        // Distinguish implementation blocks visually if you prefer
+        if (type === 'impl_item') return 'Implementation';
+        return 'Class/Struct/Trait';
     }
-    if (['function_definition', 'method_declaration', 'method_definition', 'function_declaration'].includes(type)) {
+    
+    // ⚡ UPDATED: Added rust token 'function_item'
+    if ([
+        'function_definition', 'method_declaration', 'method_definition', 
+        'function_declaration', 'function_item'
+    ].includes(type)) {
         return 'Routine';
     }
-    if (['package_clause', 'namespace_definition', 'preproc_include', 'include_statement'].includes(type)) {
-        return 'Directive';
+    
+    if (['package_clause', 'namespace_definition', 'preproc_include', 'include_statement', 'mod_item', 'use_declaration'].includes(type)) {
+        return 'Directive/Module';
     }
     return null;
 };
@@ -70,7 +89,6 @@ const getStructuralLabel = (nodeType) => {
 const fileOutlines = {};
 
 function runPipeline() {
-    // Instantiating the parser class directly with no async initialization needed!
     const parser = new Parser();
 
     console.log(`🤖 Initializing native AST mapping engines for [${PROJECT_NAME}]...`);
@@ -86,12 +104,10 @@ function runPipeline() {
         if (!pkgName) continue;
 
         try {
-            // Load the language grammar dynamically from the local or global node_modules context
             if (!loadedLanguages[pkgName]) {
                 try {
                     loadedLanguages[pkgName] = require(pkgName);
                 } catch {
-                    // Fallback to checking paths relative to the running directory root
                     const fallbackPath = path.join(ROOT_DIR, 'node_modules', pkgName);
                     loadedLanguages[pkgName] = require(fallbackPath);
                 }
@@ -109,14 +125,17 @@ function runPipeline() {
                 let nextLevel = level;
 
                 if (label) {
-                    // tree-sitter uses .text property natively on nodes to grab code segments
-                    const nameNode = node.childForFieldName('name') || node.child(1);
-                    const actualName = nameNode ? nameNode.text.split('\n')[0] : node.type;
+                    // Dynamic identifier fallback strategy
+                    const nameNode = node.childForFieldName('name') || node.childForFieldName('bounds') || node.child(1);
+                    let actualName = nameNode ? nameNode.text.split('\n')[0] : node.type;
+                    
+                    // Cleanup common trailing definition braces for Rust signatures
+                    actualName = actualName.split('{')[0].trim();
+                    
                     outlineLines.push(`${gap}- [${label}] ${actualName}`);
                     nextLevel = level + 1;
                 }
 
-                // Native tree-sitter uses namedChildren or children arrays
                 for (let i = 0; i < node.childCount; i++) {
                     walk(node.child(i), nextLevel);
                 }
@@ -155,7 +174,7 @@ ${markdownOutline || '*No trackable structures found inside this module.*'}
 
 ## Structural Text Block View
 
-\`\`\`anyblock
+\`\`\`outline
 ${blockOutline || '// No structural definitions parsed'}
 \`\`\`
 `;
@@ -182,6 +201,7 @@ ${blockOutline || '// No structural definitions parsed'}
 
     fs.writeFileSync(path.join(BASE_OUTPUT_DIR, 'DOC.md'), masterContent, 'utf-8');
     console.log('\n========= NODE-NATIVE AST GENERATOR COMPLETE =========');
+    console.log(`✔ Processed files across: C, C++, PHP, Go, Python, Dart, and Rust.`);
 }
 
 runPipeline();
