@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+/**
+ * Generate Outline for Web Projects: PHP, JS, CSS, TS, JSX, TSX
+ */
+
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -8,8 +12,20 @@ import * as acorn from 'acorn';
 import tsPlugin from 'acorn-typescript';
 import jsxPlugin from 'acorn-jsx';
 import cssParser from 'css';
+import PHPParserEngine from 'php-parser'; // ⚡ ADDED: JavaScript-Native PHP AST Parser
 
 const Parser = acorn.Parser.extend(tsPlugin(), jsxPlugin());
+
+// Initialize the PHP engine instance
+const phpEngine = new PHPParserEngine({
+    parser: {
+        extractDoc: false,
+        suppressErrors: true
+    },
+    ast: {
+        withPositions: false
+    }
+});
 
 function resolveHome(filepath) {
     if (filepath.startsWith('~')) {
@@ -18,7 +34,6 @@ function resolveHome(filepath) {
     return path.resolve(filepath);
 }
 
-// 1. Setup target directory paths
 const targetArg = process.argv[2];
 let BASE_OUTPUT_DIR = targetArg ? resolveHome(targetArg) : path.join(process.cwd(), '.docs_output');
 
@@ -30,9 +45,9 @@ const ROOT_DIR = process.cwd();
 const PROJECT_NAME = path.basename(ROOT_DIR); 
 const OBSIDIAN_VAULT_NAME = "Codes Snippets Flashcards Diagrams"; 
 
-// Match files including stylesheets 
-const files = globSync('**/*.{js,jsx,ts,tsx,css}', {
-    ignore: ['node_modules/**', 'dist/**', 'build/**', 'generate-docs.js', 'generate-docs.mjs']
+// ⚡ UPDATED: Included 'php' extension in the glob pattern
+const files = globSync('**/*.{js,jsx,ts,tsx,css,php}', {
+    ignore: ['node_modules/**', 'dist/**', 'build/**', 'generate-docs.js', 'generate-docs.mjs', '.docs_output/**']
 });
 
 if (files.length === 0) {
@@ -43,7 +58,7 @@ if (files.length === 0) {
 const fileOutlines = {}; 
 
 // ==========================================
-// 🧪 TS / JS PARSE LOGIC (Translated from jq)
+// 🧪 TS / JS PARSE LOGIC
 // ==========================================
 const getNameTS = (node) => {
     if (!node) return '?';
@@ -126,96 +141,85 @@ const walkTSOutline = (node, indent = 0) => {
 
     switch (node.type) {
         case "ImportDeclaration":
-            lines.push(`${gap}* **Import**: \`${node.source.value}\``);
+            lines.push(`${gap}- **Import**: \`${node.source.value}\``);
             break;
-
         case "ExportNamedDeclaration":
             if (node.source) {
-                lines.push(`${gap}* **Re-export**: \`${node.source.value}\``);
+                lines.push(`${gap}- **Re-export**: \`${node.source.value}\``);
             } else if (node.declaration) {
-                lines.push(`${gap}* **Export**`);
+                lines.push(`${gap}- **Export**`);
                 lines = lines.concat(walkTSOutline(node.declaration, indent + 1));
             }
             break;
-
         case "TSTypeAliasDeclaration":
-            lines.push(`${gap}* **Type**: \`${node.id.name}\``);
+            lines.push(`${gap}- **Type**: \`${node.id.name}\``);
             break;
-
         case "TSInterfaceDeclaration":
-            lines.push(`${gap}* **Interface**: \`${node.id.name}\``);
+            lines.push(`${gap}- **Interface**: \`${node.id.name}\``);
             if (node.body && node.body.body) {
                 node.body.body.forEach(m => {
-                    lines.push(`    ${gap}* \`${m.key.name || getNameTS(m.key)}\``);
+                    lines.push(`    ${gap}- \`${m.key.name || getNameTS(m.key)}\``);
                 });
             }
             break;
-
         case "VariableDeclaration":
             if (node.declarations) {
                 node.declarations.forEach(decl => {
                     const varName = decl.id.name || "?";
-                    lines.push(`${gap}* **Var**: \`${varName}\``);
+                    lines.push(`${gap}- **Var**: \`${varName}\``);
                 });
             }
             break;
-
         case "FunctionDeclaration":
-            lines.push(`${gap}* **Func**: \`${node.id.name}${getParamsTS(node.params)}${getReturnTS(node.returnType)}\``);
+            lines.push(`${gap}- **Func**: \`${node.id.name}${getParamsTS(node.params)}${getReturnTS(node.returnType)}\``);
             break;
-
         case "ClassDeclaration":
-            lines.push(`${gap}* **Class**: \`${node.id.name}\``);
+            lines.push(`${gap}- **Class**: \`${node.id.name}\``);
             if (node.body && node.body.body) {
                 node.body.body.forEach(sub => {
                     lines = lines.concat(walkTSOutline(sub, indent + 1));
                 });
             }
             break;
-
         case "MethodDefinition": {
             const asyncMark = node.value?.async ? " *(async)*" : "";
-            lines.push(`${gap}* [method/${node.kind}] \`${getNameTS(node.key)}${getParamsTS(node.value?.params)}${getReturnTS(node.value?.returnType)}\`${asyncMark}`);
+            lines.push(`${gap}- [method/${node.kind}] \`${getNameTS(node.key)}${getParamsTS(node.value?.params)}${getReturnTS(node.value?.returnType)}\`${asyncMark}`);
             break;
         }
-
         case "PropertyDefinition": {
             const access = node.accessibility ? ` (${node.accessibility})` : "";
-            lines.push(`${gap}* [prop] \`${node.key.name || getNameTS(node.key)}\`${access}`);
+            lines.push(`${gap}- [prop] \`${node.key.name || getNameTS(node.key)}\`${access}`);
             break;
         }
-
-        // JavaScript/JSX fallbacks matched from earlier specs
         case "JSXElement": {
             const tagName = getNameTS(node.openingElement?.name) || "unknown";
-            lines.push(`${gap}* **JSX**: \`<${tagName}>\``);
+            lines.push(`${gap}- **JSX**: \`<${tagName}>\``);
             if (node.children) {
                 node.children.forEach(child => { lines = lines.concat(walkTSOutline(child, indent + 1)); });
             }
             break;
         }
         case "JSXFragment":
-            lines.push(`${gap}* **JSX**: \`<Fragment>\``);
+            lines.push(`${gap}- **JSX**: \`<Fragment>\``);
             if (node.children) {
                 node.children.forEach(child => { lines = lines.concat(walkTSOutline(child, indent + 1)); });
             }
             break;
         case "ExpressionStatement":
             if (node.expression?.type === "CallExpression" && node.expression.callee?.name === "useEffect") {
-                lines.push(`${gap}* **Hook**: \`useEffect\``);
+                lines.push(`${gap}- **Hook**: \`useEffect\``);
             }
             break;
         case "ReturnStatement":
-            lines.push(`${gap}* **Return**`);
+            lines.push(`${gap}- **Return**`);
             if (node.argument) lines = lines.concat(walkTSOutline(node.argument, indent + 1));
             break;
     }
-
     return lines;
 };
 
 // ==========================================
-// 🎨 CSS PARSE LOGIC (Translated from jq)
+// 🎨 CSS PARSE LOGIC
 // ==========================================
 const walkCSSOutline = (rules) => {
     let lines = [];
@@ -253,7 +257,70 @@ const walkCSSOutline = (rules) => {
             }
         }
     });
+    return lines;
+};
 
+// ==========================================
+// 🐘 PHP PARSE LOGIC (⚡ NEW ADDITION)
+// ==========================================
+const walkPHPOutline = (node, indent = 0) => {
+    if (!node) return [];
+    const gap = "  ".repeat(indent);
+    let lines = [];
+
+    // Map PHP architecture kinds safely
+    switch (node.kind) {
+        case "namespace":
+            lines.push(`${gap}- **Namespace**: \`${node.name}\``);
+            if (node.children) {
+                node.children.forEach(child => { lines = lines.concat(walkPHPOutline(child, indent + 1)); });
+            }
+            break;
+
+        case "usegroup":
+            if (node.items) {
+                node.items.forEach(item => {
+                    lines.push(`${gap}- **Use**: \`${item.name}\``);
+                });
+            }
+            break;
+
+        case "class":
+        case "interface":
+        case "trait": {
+            const typeLabel = node.kind.charAt(0).toUpperCase() + node.kind.slice(1);
+            lines.push(`${gap}- **${typeLabel}**: \`${node.name}\``);
+            if (node.body) {
+                node.body.forEach(member => { lines = lines.concat(walkPHPOutline(member, indent + 1)); });
+            }
+            break;
+        }
+
+        case "method": {
+            const visibility = node.visibility || "public";
+            const isStatic = node.isStatic ? "static " : "";
+            const params = node.arguments ? `(${node.arguments.map(a => `$${a.name}`).join(', ')})` : "()";
+            lines.push(`${gap}- [method/${visibility}] \`${isStatic}${node.name}${params}\``);
+            break;
+        }
+
+        case "property": {
+            const visibility = node.visibility || "public";
+            const isStatic = node.isStatic ? "static " : "";
+            lines.push(`${gap}- [prop] \`${visibility} ${isStatic}$${node.name}\``);
+            break;
+        }
+
+        case "function": {
+            const params = node.arguments ? `(${node.arguments.map(a => `$${a.name}`).join(', ')})` : "()";
+            lines.push(`${gap}- **Func**: \`${node.name}${params}\``);
+            break;
+        }
+
+        case "constant":
+            lines.push(`${gap}- **Const**: \`${node.name}\``);
+            break;
+    }
     return lines;
 };
 
@@ -269,13 +336,19 @@ files.forEach(file => {
         let outlineLines = [];
 
         if (ext === '.css') {
-            // CSS parsing router module
             const cssAst = cssParser.parse(code);
             if (cssAst.stylesheet && cssAst.stylesheet.rules) {
                 outlineLines = walkCSSOutline(cssAst.stylesheet.rules);
             }
+        } else if (ext === '.php') {
+            // ⚡ PHP Router Flow Routing Integration
+            const phpAst = phpEngine.parseCode(code, file);
+            if (phpAst && phpAst.children) {
+                phpAst.children.forEach(node => {
+                    outlineLines = outlineLines.concat(walkPHPOutline(node, 0));
+                });
+            }
         } else {
-            // TS / JS / JSX engine router module
             const ast = Parser.parse(code, {
                 ecmaVersion: 'latest',
                 sourceType: 'module',
@@ -291,12 +364,11 @@ files.forEach(file => {
         const markdownOutline = outlineLines.join('\n');
         fileOutlines[relativePath] = markdownOutline;
 
-        // Clean tree output string manipulation for plain ```outline formatting blocks
         const blockOutline = outlineLines
             .map(line => line.replace(/^\s*\*\s*\*\*/, (match) => match.replace('* **', '')).replace(/\*\*/g, ''))
             .join('\n');
 
-        const encodedVault = encodeURIComponent(OBSIDIAN_VAULT_NAME);
+        const encodedVault = encodeURIComponent(OBSIDIAN_VAULT_NAME || OBSIDIAN_VAULT_NAME);
         const obsidianEscapedPath = `temp/` + absolutePath.replace(/\//g, '-s-') + '.md';
         const encodedObsidianPath = encodeURIComponent(obsidianEscapedPath);
 
@@ -323,8 +395,9 @@ ${markdownOutline || '*No trackable outline metrics found within this file modul
 
 ## Structural Text Block View
 
-\`\`\`outline
-${blockOutline || '// No structural definitions'}
+\`\`\`anyblock
+[list2node]
+${markdownOutline || '// No structural definitions'}
 \`\`\`
 `;
 
@@ -360,7 +433,8 @@ Object.keys(fileOutlines).forEach(relativePath => {
 ${fileOutlines[relativePath] ? fileOutlines[relativePath] : '  * *Empty Module Schema*'}
 
 #### Code Structure Custom Block Preview
-\`\`\`outline
+\`\`\`anyblock
+[list2node]
 ${cleanBlockLines}
 \`\`\`
 

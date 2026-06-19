@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+/**
+* Generate Outline for flutter - Pure AST Generator
+* TODO: Add new script based on this for generating based on dart-ast(TheComputerM/dart-ast)
+*/
+
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -265,8 +270,6 @@ ${markdownOutline || '*No trackable Class structures, Methods or Widget layouts 
 
 ## Structural Text Block View
 
-\`\`\`outline
-${blockOutline || '// No structural definitions parsed'}
 \`\`\`
 `;
 
@@ -302,8 +305,9 @@ Object.keys(fileOutlines).forEach(relativePath => {
 ${fileOutlines[relativePath] ? fileOutlines[relativePath] : '  * *Empty Module Core Details*'}
 
 #### Core Blueprint Structure Custom Block Preview
-\`\`\`outline
-${cleanBlockLines}
+\`\`\`anyblock
+[list2node]
+${markdownOutline}
 \`\`\`
 
 ---

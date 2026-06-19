@@ -174,8 +174,9 @@ ${markdownOutline || '*No trackable structures found inside this module.*'}
 
 ## Structural Text Block View
 
-\`\`\`outline
-${blockOutline || '// No structural definitions parsed'}
+\`\`\`anyblock
+[list2node]
+${markdownOutline || '*No trackable structures found inside this module.*'}
 \`\`\`
 `;
 

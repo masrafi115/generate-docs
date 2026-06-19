@@ -5,8 +5,10 @@
     "acorn": "^8.17.0",
     "acorn-jsx": "^5.3.2",
     "acorn-typescript": "^1.4.13",
+    "css": "^3.0.0",
     "estree-walker": "^3.0.3",
     "glob": "^13.0.6",
+    "php-parser": "^3.7.0",
     "tree-sitter": "^0.25.0",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
@@ -14,6 +16,7 @@
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-php": "^0.24.2",
     "tree-sitter-python": "^0.25.0",
+    "tree-sitter-rust": "^0.24.0",
     "web-tree-sitter": "^0.26.9"
   }
 }

@@ -9,6 +9,10 @@ import tsPlugin from 'acorn-typescript';
 import jsxPlugin from 'acorn-jsx';
 import { walk } from 'estree-walker';
 
+/**
+* Generate Mermaid for js, ts, jsx,tsx
+* 
+*/
 const Parser = acorn.Parser.extend(tsPlugin(), jsxPlugin());
 
 function resolveHome(filepath) {
