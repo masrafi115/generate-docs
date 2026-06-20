@@ -1,35 +1,60 @@
 #!/usr/bin/env node
 
 /**
-* Generate Outline for flutter - Pure AST Generator
-* TODO: Add new script based on this for generating based on dart-ast(TheComputerM/dart-ast)
-*/
+ * Generate Outline for Flutter/Dart — Tree-Sitter AST Parser
+ *
+ * Replaces the hand-rolled JS lexer with native tree-sitter bindings.
+ * Grammar: @driftlog/tree-sitter-dart  (peer: tree-sitter >=0.22)
+ *
+ * Install:
+ *   npm install tree-sitter @driftlog/tree-sitter-dart glob
+ */
 
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
-import os from 'os';
-import { globSync } from 'glob';
+import os   from 'os';
+import { globSync }    from 'glob';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const Parser  = require('tree-sitter');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function resolveHome(filepath) {
-    if (filepath.startsWith('~')) {
-        return path.join(os.homedir(), filepath.slice(1));
-    }
+    if (filepath.startsWith('~')) return path.join(os.homedir(), filepath.slice(1));
     return path.resolve(filepath);
 }
 
-const targetArg = process.argv[2];
-let BASE_OUTPUT_DIR = targetArg ? resolveHome(targetArg) : path.join(process.cwd(), '.docs_output');
-
-if (!fs.existsSync(BASE_OUTPUT_DIR)) {
-    fs.mkdirSync(BASE_OUTPUT_DIR, { recursive: true });
+// @driftlog/tree-sitter-dart exports the binding directly (no sub-property needed)
+function loadDartLanguage() {
+    try {
+        return require('@driftlog/tree-sitter-dart');
+    } catch {
+        const fallback = path.join(process.cwd(), 'node_modules', '@driftlog', 'tree-sitter-dart');
+        return require(fallback);
+    }
 }
 
-const ROOT_DIR = process.cwd();
-const PROJECT_NAME = path.basename(ROOT_DIR); 
-const OBSIDIAN_VAULT_NAME = "Codes Snippets Flashcards Diagrams"; 
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const targetArg     = process.argv[2];
+const BASE_OUTPUT_DIR = targetArg
+    ? resolveHome(targetArg)
+    : path.join(process.cwd(), '.docs_output');
+
+if (!fs.existsSync(BASE_OUTPUT_DIR)) fs.mkdirSync(BASE_OUTPUT_DIR, { recursive: true });
+
+const ROOT_DIR    = process.cwd();
+const PROJECT_NAME = path.basename(ROOT_DIR);
+const OBSIDIAN_VAULT_NAME = "Codes Snippets Flashcards Diagrams";
 
 const files = globSync('**/*.dart', {
-    ignore: ['node_modules/**', 'dist/**', 'build/**', '.dart_tool/**', '.docs_output/**']
+    ignore: ['node_modules/**', 'dist/**', 'build/**', '.dart_tool/**', '.docs_output/**'],
 });
 
 if (files.length === 0) {
@@ -37,220 +62,274 @@ if (files.length === 0) {
     process.exit(0);
 }
 
-const fileOutlines = {}; 
+// ---------------------------------------------------------------------------
+// AST label mapping
+//
+// Node types sourced from @driftlog/tree-sitter-dart src/node-types.json.
+// Only the structurally meaningful named nodes are mapped; everything else
+// is traversed silently so we don't miss nested declarations.
+// ---------------------------------------------------------------------------
 
-// =========================================================================
-// 🧠 PURE JS DART LEXER & TREE PARSER (Generates true nested JSON AST maps)
-// =========================================================================
-const parseDartToTrueAst = (code) => {
-    // Clean code by stripping block and line comments while preserving layout space
-    const cleanCode = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
-    
-    // Tokenize into words, symbols, and string literals
-    const tokenRegex = /[A-Za-z0-9_.]+|[{}([\]);,]|"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'/g;
-    const tokens = cleanCode.match(tokenRegex) || [];
-    
-    let index = 0;
+/**
+ * Returns a human-readable label for a tree-sitter node type, or null if
+ * the node should be traversed without emitting an outline entry.
+ *
+ * @param {string} nodeType  - node.type from the tree-sitter AST
+ * @returns {{ label: string, kind: string } | null}
+ */
+function classifyNode(nodeType) {
+    switch (nodeType) {
+        // ── Types / Classes ───────────────────────────────────────────────
+        case 'class_definition':
+            return { label: 'Class',           kind: 'type' };
+        case 'mixin_declaration':
+            return { label: 'Mixin',           kind: 'type' };
+        case 'mixin_application_class':
+            return { label: 'Mixin Class',     kind: 'type' };
+        case 'extension_declaration':
+            return { label: 'Extension',       kind: 'type' };
+        case 'extension_type_declaration':
+            return { label: 'Extension Type',  kind: 'type' };
+        case 'enum_declaration':
+            return { label: 'Enum',            kind: 'type' };
 
-    // Helper to peek ahead in the token stream
-    const peek = (offset = 0) => tokens[index + offset] || null;
-    // Helper to consume the current token
-    const next = () => tokens[index++];
+        // ── Functions / Methods ───────────────────────────────────────────
+        case 'function_signature':
+            return { label: 'Function',        kind: 'routine' };
+        case 'getter_signature':
+            return { label: 'Getter',          kind: 'routine' };
+        case 'setter_signature':
+            return { label: 'Setter',          kind: 'routine' };
+        case 'operator_signature':
+            return { label: 'Operator',        kind: 'routine' };
+        case 'local_function_declaration':
+            return { label: 'Local Function',  kind: 'routine' };
 
-    // Recursively processes code execution blocks to build true structural hierarchies
-    const parseBlock = (endSymbol) => {
-        let nodes = [];
+        // ── Constructors ──────────────────────────────────────────────────
+        case 'constructor_signature':
+            return { label: 'Constructor',               kind: 'constructor' };
+        case 'constant_constructor_signature':
+            return { label: 'Const Constructor',         kind: 'constructor' };
+        case 'factory_constructor_signature':
+            return { label: 'Factory Constructor',       kind: 'constructor' };
+        case 'redirecting_factory_constructor_signature':
+            return { label: 'Redirecting Constructor',   kind: 'constructor' };
 
-        while (index < tokens.length) {
-            let token = peek();
-            if (token === endSymbol) {
-                next(); // consume closer
-                break;
-            }
+        // ── Fields / Variables ────────────────────────────────────────────
+        case 'initialized_variable_definition':
+            return { label: 'Variable',        kind: 'field' };
+        case 'static_final_declaration':
+            return { label: 'Static Final',    kind: 'field' };
 
-            if (token === '{' || token === '(' || token === '[') {
-                const opener = next();
-                const closer = opener === '{' ? '}' : (opener === '(' ? ')' : ']');
-                // Create a sub-structural array container for tracking nested properties
-                const subChildren = parseBlock(closer);
-                if (nodes.length > 0) {
-                    nodes[nodes.length - 1].children = (nodes[nodes.length - 1].children || []).concat(subChildren);
-                }
-                continue;
-            }
+        // ── Directives ────────────────────────────────────────────────────
+        case 'library_import':
+        case 'import_specification':
+            return { label: 'Import',          kind: 'directive' };
+        case 'library_export':
+            return { label: 'Export',          kind: 'directive' };
+        case 'library_name':
+            return { label: 'Library',         kind: 'directive' };
 
-            // Detect Class Structural Declarations
-            if (token === 'class' || token === 'abstract') {
-                let fullSig = [];
-                while (peek() && peek() !== '{' && peek() !== ';') {
-                    fullSig.push(next());
-                }
-                nodes.push({
-                    type: "ClassDeclarationImpl",
-                    source: fullSig.join(' '),
-                    children: []
-                });
-                continue;
-            }
+        default:
+            return null;
+    }
+}
 
-            // Detect Instance Conversions (Widgets/Objects)
-            if (/^[A-Z]/.test(token) && peek(1) === '(') {
-                const wName = token;
-                next(); // consume name
-                next(); // consume '('
-                
-                const widgetNode = {
-                    type: "InstanceCreationExpressionImpl",
-                    source: `${wName}()`,
-                    children: [
-                        { type: "SimpleIdentifierImpl", source: wName }
-                    ]
-                };
-                
-                // Recursively gather parameters inside the instantiation brackets
-                const innerParams = parseBlock(')');
-                widgetNode.children = widgetNode.children.concat(innerParams);
-                nodes.push(widgetNode);
-                continue;
-            }
+// ---------------------------------------------------------------------------
+// Name extraction
+//
+// Each node type exposes its identifier differently.  We try the most
+// specific field first, then fall back to scanning immediate children for
+// an `identifier` node, then to the raw source text.
+// ---------------------------------------------------------------------------
 
-            // Detect Method and Function Declarations
-            if (/^[A-Za-z0-9_<>?]+$/.test(token) && /^[a-z]/.test(peek(1)) && peek(2) === '(') {
-                const returnType = token;
-                const methodName = next();
-                next(); // consume function name
-                next(); // consume '('
-                
-                const methodNode = {
-                    type: "MethodDeclarationImpl",
-                    source: `${returnType} ${methodName}()`,
-                    children: [
-                        { type: "NamedTypeImpl", source: returnType }
-                    ]
-                };
-                
-                const innerArgs = parseBlock(')');
-                methodNode.children = methodNode.children.concat(innerArgs);
-                nodes.push(methodNode);
-                continue;
-            }
+/**
+ * Extract a display name string from a tree-sitter node.
+ *
+ * @param {object} node  - tree-sitter SyntaxNode
+ * @returns {string}
+ */
+function extractName(node) {
+    // 1. Try the `name` field — present on class_definition, enum_declaration,
+    //    extension_declaration, extension_type_declaration, constructor_signature,
+    //    function_signature, getter_signature, setter_signature.
+    const nameField = node.childForFieldName('name');
+    if (nameField) return nameField.text.trim();
 
-            // Capture unmapped expressions safely as text snippets
-            const currentToken = next();
-            if (/^[A-Za-z0-9_]+$/.test(currentToken)) {
-                nodes.push({
-                    type: "SimpleIdentifierImpl",
-                    source: currentToken
-                });
+    // 2. For library_import / library_export there is no `name` field; pull
+    //    the URI from the first child of type `import_specification` or the
+    //    raw string literal child.
+    if (node.type === 'library_import') {
+        const spec = [...Array(node.childCount).keys()]
+            .map(i => node.child(i))
+            .find(c => c.type === 'import_specification');
+        if (spec) {
+            const uri = [...Array(spec.childCount).keys()]
+                .map(i => spec.child(i))
+                .find(c => c.type === 'uri' || c.type === 'configurable_uri' || c.type === 'string_literal');
+            if (uri) return uri.text.replace(/['"]/g, '');
+        }
+    }
+
+    if (node.type === 'library_export') {
+        const uri = [...Array(node.childCount).keys()]
+            .map(i => node.child(i))
+            .find(c => c.type === 'configurable_uri' || c.type === 'string_literal');
+        if (uri) return uri.text.replace(/['"]/g, '');
+    }
+
+    // 3. Scan immediate children for any `identifier` node.
+    for (let i = 0; i < node.childCount; i++) {
+        const c = node.child(i);
+        if (c.type === 'identifier' || c.type === 'type_identifier') {
+            return c.text.trim();
+        }
+    }
+
+    // 4. Last resort: first line of raw source, trimmed of braces/semicolons.
+    return node.text.split('\n')[0].split('{')[0].split(';')[0].trim().slice(0, 80);
+}
+
+// ---------------------------------------------------------------------------
+// Return-type extraction  (best-effort for functions / getters / setters)
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to find the declared return type of a routine node.
+ * Returns an empty string when none is determinable.
+ *
+ * @param {object} node - tree-sitter SyntaxNode
+ * @returns {string}
+ */
+function extractReturnType(node) {
+    const typeKinds = new Set([
+        'type_identifier', 'nullable_type', 'void_type',
+        'function_type', 'record_type', 'inferred_type',
+    ]);
+    for (let i = 0; i < node.childCount; i++) {
+        const c = node.child(i);
+        if (typeKinds.has(c.type)) return c.text.trim();
+    }
+    return '';
+}
+
+// ---------------------------------------------------------------------------
+// Parameter list extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull the raw text of the formal_parameter_list child, if present.
+ *
+ * @param {object} node - tree-sitter SyntaxNode
+ * @returns {string}  e.g. "(int a, String b)"
+ */
+function extractParams(node) {
+    // Use the `parameters` field when available (constructor_signature)
+    const paramsField = node.childForFieldName('parameters');
+    if (paramsField) return paramsField.text.trim();
+
+    // Otherwise look for formal_parameter_list among direct children
+    for (let i = 0; i < node.childCount; i++) {
+        const c = node.child(i);
+        if (c.type === 'formal_parameter_list') return c.text.trim();
+    }
+    return '';
+}
+
+// ---------------------------------------------------------------------------
+// AST walker — produces outline lines
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively walk a tree-sitter subtree, emitting indented outline lines
+ * for every classified node.
+ *
+ * Nodes that are classified get an entry and their children are walked at
+ * the next indentation level.  Unclassified nodes are walked transparently
+ * at the same level so no nested declarations are missed.
+ *
+ * @param {object}   node        - tree-sitter SyntaxNode
+ * @param {number}   level       - current indentation depth
+ * @param {string[]} lines       - accumulator array (mutated in-place)
+ */
+function walk(node, level, lines) {
+    const info = classifyNode(node.type);
+
+    if (info) {
+        const indent = '  '.repeat(level);
+        const name   = extractName(node);
+
+        let suffix = '';
+        if (info.kind === 'routine') {
+            const ret    = extractReturnType(node);
+            const params = extractParams(node);
+            if (ret)    suffix += ` [Returns: ${ret}]`;
+            if (params) suffix += ` [Params: ${params}]`;
+        } else if (info.kind === 'constructor') {
+            const params = extractParams(node);
+            if (params) suffix += ` [Params: ${params}]`;
+        } else if (info.kind === 'field') {
+            // For variables/statics show the type identifier if present
+            const typeKinds = new Set(['type_identifier', 'nullable_type', 'void_type', 'inferred_type']);
+            for (let i = 0; i < node.childCount; i++) {
+                const c = node.child(i);
+                if (typeKinds.has(c.type)) { suffix = ` [Type: ${c.text.trim()}]`; break; }
             }
         }
 
-        return nodes;
-    };
+        lines.push(`${indent}- ${name} [${info.label}]${suffix}`);
 
-    return parseBlock(null);
-};
-
-// ==========================================
-// 🎯 PORTED JQ LOGIC ENGINE
-// ==========================================
-const isWidget = (node) => {
-    if (node.type === "MethodInvocationImpl" || node.type === "InstanceCreationExpressionImpl") {
-        if (!node.children || !Array.isArray(node.children)) return false;
-        const target = node.children.find(c => c.type === "SimpleIdentifierImpl" || c.type === "ConstructorNameImpl");
-        const source = target?.source || "";
-        const baseName = source.split('.')[0];
-        return /^[A-Z]/.test(baseName) && !/^(MediaQuery|EdgeInsets|BoxFit|Colors|Icons|GoogleFonts|MainAxis|CrossAxis|FontWeight|TextStyle|WidgetState|Alignment|Navigator|ResponsiveBreakpoints|ModalRoute)$/.test(baseName);
-    }
-    return false;
-};
-
-const widgetName = (node) => {
-    if (!node.children || !Array.isArray(node.children)) return "";
-    const target = node.children.find(c => c.type === "SimpleIdentifierImpl" || c.type === "ConstructorNameImpl");
-    return (target?.source || "").split('.')[0];
-};
-
-const getType = (node) => {
-    if (node.type === "MethodDeclarationImpl" || node.type === "FunctionDeclarationImpl") {
-        if (!node.children) return "void";
-        return node.children.find(c => c.type === "NamedTypeImpl")?.source || "void";
-    }
-    if (node.type === "FieldDeclarationImpl") {
-        if (!node.children || !node.children[0] || !node.children[0].children) return "dynamic";
-        return node.children[0].children.find(c => c.type === "NamedTypeImpl")?.source || "dynamic";
-    }
-    return "";
-};
-
-const cleanSig = (sourceStr) => {
-    if (!sourceStr) return "";
-    return sourceStr.split('\n')[0].split('{')[0].split ';'[0].trim();
-};
-
-const walkDartOutline = (nodes, level = 0) => {
-    if (!nodes || !Array.isArray(nodes)) return [];
-    let lines = [];
-    const gap = "  ".repeat(level);
-
-    nodes.forEach(node => {
-        if (!node) return;
-
-        if (node.type === "ClassDeclarationImpl") {
-            lines.push(`${gap}- ${cleanSig(node.source)}`);
-            if (node.children) lines = lines.concat(walkDartOutline(node.children, level + 1));
-        } 
-        else if (node.type === "MethodDeclarationImpl" || node.type === "FunctionDeclarationImpl") {
-            const typeStr = getType(node);
-            lines.push(`${gap}- ${cleanSig(node.source)} [Returns: ${typeStr}]`);
-            if (node.children) lines = lines.concat(walkDartOutline(node.children, level + 1));
-        } 
-        else if (node.type === "ConstructorDeclarationImpl" || node.type === "FieldDeclarationImpl") {
-            const typeStr = getType(node);
-            const typeSuffix = typeStr ? ` [Type: ${typeStr}]` : "";
-            lines.push(`${gap}- ${cleanSig(node.source)}${typeSuffix}`);
-        } 
-        else if (isWidget(node)) {
-            lines.push(`${gap}- ${widgetName(node)}`);
-            if (node.children) lines = lines.concat(walkDartOutline(node.children, level + 1));
-        } 
-        else {
-            if (node.children) lines = lines.concat(walkDartOutline(node.children, level));
+        // Walk children one level deeper
+        for (let i = 0; i < node.childCount; i++) {
+            walk(node.child(i), level + 1, lines);
         }
-    });
+    } else {
+        // Transparent traversal — same indentation level
+        for (let i = 0; i < node.childCount; i++) {
+            walk(node.child(i), level, lines);
+        }
+    }
+}
 
-    return lines;
-};
+// ---------------------------------------------------------------------------
+// Main pipeline
+// ---------------------------------------------------------------------------
 
-console.log(`Analyzing codebase targets into structural representations for [${PROJECT_NAME}]...`);
+function runPipeline() {
+    const parser = new Parser();
+    parser.setLanguage(loadDartLanguage());
 
-files.forEach(file => {
-    const absolutePath = path.resolve(file).replace(/\\/g, '/');
-    const relativePath = path.relative(ROOT_DIR, file).replace(/\\/g, '/');
-    
-    try {
-        const code = fs.readFileSync(absolutePath, 'utf-8');
-        
-        // Generates actual object trees with matching brace/bracket levels
-        const runtimeGeneratedAst = parseDartToTrueAst(code);
+    console.log(`Analysing Dart codebase for [${PROJECT_NAME}]...`);
 
-        let outlineLines = walkDartOutline(runtimeGeneratedAst, 0);
-        const markdownOutline = outlineLines.join('\n');
-        fileOutlines[relativePath] = markdownOutline;
+    const fileOutlines = {};
 
-        const blockOutline = outlineLines
-            .map(line => line.replace(/^(\s*)-\s*/, '$1'))
-            .join('\n');
+    for (const file of files) {
+        const absolutePath = path.resolve(file).replace(/\\/g, '/');
+        const relativePath = path.relative(ROOT_DIR, file).replace(/\\/g, '/');
 
-        const encodedVault = encodeURIComponent(OBSIDIAN_VAULT_NAME);
-        const obsidianEscapedPath = `temp/` + absolutePath.replace(/\//g, '-s-') + '.md';
-        const encodedObsidianPath = encodeURIComponent(obsidianEscapedPath);
+        try {
+            const rawCode = fs.readFileSync(absolutePath, 'utf-8');
+            const tree    = parser.parse(rawCode);
 
-        const obsidianUri = `obsidian://open?vault=${encodedVault}&file=${encodedObsidianPath}`;
-        const fileUri = `file://${absolutePath}`;
-        const vscodeUri = `vscode://file/${absolutePath}`;
+            const outlineLines = [];
+            walk(tree.rootNode, 0, outlineLines);
 
-        const markdownWrapper = `---
+            const markdownOutline = outlineLines.join('\n');
+            fileOutlines[relativePath] = markdownOutline;
+
+            const blockOutline = outlineLines
+                .map(line => line.replace(/^(\s*)-\s*/, '$1'))
+                .join('\n');
+
+            const encodedVault       = encodeURIComponent(OBSIDIAN_VAULT_NAME);
+            const obsidianEscapedPath = `temp/` + absolutePath.replace(/\//g, '-s-') + '.md';
+            const encodedObsidianPath = encodeURIComponent(obsidianEscapedPath);
+
+            const obsidianUri = `obsidian://open?vault=${encodedVault}&file=${encodedObsidianPath}`;
+            const fileUri     = `file://${absolutePath}`;
+            const vscodeUri   = `vscode://file/${absolutePath}`;
+
+            const markdownWrapper = `---
 project: "${PROJECT_NAME}"
 original_path: ${absolutePath}
 file_uri: ${fileUri}
@@ -268,59 +347,52 @@ obsidian_uri: ${obsidianUri}
 
 ${markdownOutline || '*No trackable Class structures, Methods or Widget layouts found inside this module.*'}
 
-## Structural Text Block View
+## Structural Block View
 
-\`\`\`
-`;
-
-        const safeFileName = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
-        fs.writeFileSync(path.join(BASE_OUTPUT_DIR, safeFileName), markdownWrapper, 'utf-8');
-
-    } catch (err) {
-        console.error(`❌ Parse execution failed on Dart asset target [${relativePath}]:`, err.message);
-    }
-});
-
-// 3. Compile Master Index Summary Log Catalogue
-let masterContent = `# Project Dart Blueprint Structural Catalog Index
-
----
-
-## Workspace Dart Module Map Matrix
-`;
-
-Object.keys(fileOutlines).forEach(relativePath => {
-    const safeFileName = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
-    const componentMdPath = path.join(BASE_OUTPUT_DIR, safeFileName);
-    const componentMdUri = `file://${path.resolve(componentMdPath).replace(/\\/g, '/')}`;
-
-    const cleanBlockLines = fileOutlines[relativePath]
-        ? fileOutlines[relativePath].split('\n').map(line => line.replace(/^(\s*)-\s*/, '$1')).join('\n')
-        : '// Empty Module Scheme';
-
-    masterContent += `\n### 📄 Module Summary Mapping: \`${relativePath}\`
-* **Isolated Tree Document Matrix:** [Open Target File Workspace View](${componentMdUri})
-
-#### Dart Module Structural Architecture Profile
-${fileOutlines[relativePath] ? fileOutlines[relativePath] : '  * *Empty Module Core Details*'}
-
-#### Core Blueprint Structure Custom Block Preview
 \`\`\`anyblock
 [list2node]
-${markdownOutline}
+${markdownOutline || '// Empty Module Scheme'}
 \`\`\`
-
----
 `;
-});
 
-masterContent += `\n*Generated automatically on ${new Date().toLocaleString()}*`;
+            const safeFileName = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
+            fs.writeFileSync(path.join(BASE_OUTPUT_DIR, safeFileName), markdownWrapper, 'utf-8');
 
-const docMdPath = path.join(BASE_OUTPUT_DIR, 'DOC.md');
-fs.writeFileSync(docMdPath, masterContent, 'utf-8');
+        } catch (err) {
+            console.error(`❌ Parse failed [${relativePath}]: ${err.message}`);
+        }
+    }
 
-console.log('\n========= PURE COMPILER-LESS TREE PARSER COMPLETE =========');
-console.log(`✔ Isolated Structural Modules Mapped   -> ${Object.keys(fileOutlines).length} files parsed`);
-console.log(`✔ Master Catalog Documentation Doc  -> ${docMdPath}`);
-console.log('=====================================================');
-//Test 
+    // ── Master index ────────────────────────────────────────────────────────
+    let masterContent = `# Project Dart Blueprint Structural Catalog Index\n\n---\n\n## Workspace Dart Module Map Matrix\n`;
+
+    for (const relativePath of Object.keys(fileOutlines)) {
+        const safeFileName    = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
+        const componentMdPath = path.join(BASE_OUTPUT_DIR, safeFileName);
+        const componentMdUri  = `file://${path.resolve(componentMdPath).replace(/\\/g, '/')}`;
+
+        const cleanBlockLines = fileOutlines[relativePath]
+            ? fileOutlines[relativePath].split('\n').map(l => l.replace(/^(\s*)-\s*/, '$1')).join('\n')
+            : '// Empty Module Scheme';
+
+        masterContent +=
+            `\n### 📄 Module Summary Mapping: \`${relativePath}\`\n` +
+            `* **Isolated Tree Document Matrix:** [Open Target File Workspace View](${componentMdUri})\n\n` +
+            `#### Dart Module Structural Architecture Profile\n` +
+            `${fileOutlines[relativePath] || '  * *Empty Module Core Details*'}\n\n` +
+            `#### Core Blueprint Structure Custom Block Preview\n` +
+            `\`\`\`anyblock\n[list2node]\n${cleanBlockLines}\n\`\`\`\n\n---\n`;
+    }
+
+    masterContent += `\n*Generated automatically on ${new Date().toLocaleString()}*`;
+
+    const docMdPath = path.join(BASE_OUTPUT_DIR, 'DOC.md');
+    fs.writeFileSync(docMdPath, masterContent, 'utf-8');
+
+    console.log('\n========= TREE-SITTER DART AST GENERATOR COMPLETE =========');
+    console.log(`✔ Isolated Structural Modules Mapped   -> ${Object.keys(fileOutlines).length} files parsed`);
+    console.log(`✔ Master Catalog Documentation Doc  -> ${docMdPath}`);
+    console.log('============================================================');
+}
+
+runPipeline();

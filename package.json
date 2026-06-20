@@ -1,10 +1,13 @@
 {
   "dependencies": {
+    "@ast-grep/napi": "^0.43.0",
     "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
+    "@driftlog/tree-sitter-dart": "^1.0.4",
     "acorn": "^8.17.0",
     "acorn-jsx": "^5.3.2",
     "acorn-typescript": "^1.4.13",
+    "ast-grep-tree-sitter-dart": "^0.0.5",
     "css": "^3.0.0",
     "estree-walker": "^3.0.3",
     "glob": "^13.0.6",
@@ -17,6 +20,7 @@
     "tree-sitter-php": "^0.24.2",
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-rust": "^0.24.0",
+    "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.26.9"
   }
 }

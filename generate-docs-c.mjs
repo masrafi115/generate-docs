@@ -2,17 +2,39 @@
 
 /**
  * Universal Node-Native Tree-Sitter AST Documentation & Outline Parser
- * Supports: C, C++, PHP, Go, Python, Dart, and Rust (.rs)
+ * Supports: C, C++, PHP, Go, Python, Dart, and Rust
+ *
+ * All languages go through a single tree-sitter pipeline — no secondary
+ * frameworks. Each grammar package has its own export shape; the
+ * resolveLanguage() helper normalises them all before they touch the parser.
+ *
+ * Grammar packages and their quirks:
+ *   tree-sitter-c       – ESM default export  → need .default
+ *   tree-sitter-cpp     – CJS, binding IS the lang object (no sub-key)
+ *   tree-sitter-php     – CJS, exposes { php, php_only } → use .php
+ *   tree-sitter-go      – CJS, binding IS the lang object
+ *   tree-sitter-python  – CJS, binding IS the lang object
+ *   tree-sitter-rust    – CJS, binding IS the lang object
+ *   @driftlog/tree-sitter-dart – CJS, binding IS the lang object
+ *
+ * Install all grammars:
+ *   npm install tree-sitter tree-sitter-c tree-sitter-cpp tree-sitter-php \
+ *               tree-sitter-go tree-sitter-python tree-sitter-rust \
+ *               @driftlog/tree-sitter-dart
  */
 
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
-import os from 'os';
-import { globSync } from 'glob';
+import os   from 'os';
+import { globSync }    from 'glob';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const Parser = require('tree-sitter');
+const Parser  = require('tree-sitter');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function resolveHome(filepath) {
     if (filepath.startsWith('~')) {
@@ -21,23 +43,51 @@ function resolveHome(filepath) {
     return path.resolve(filepath);
 }
 
-const targetArg = process.argv[2];
-let BASE_OUTPUT_DIR = targetArg ? resolveHome(targetArg) : path.join(process.cwd(), '.docs_output');
+/**
+ * Normalise the raw module export from a grammar package into the plain
+ * language object that `parser.setLanguage()` expects.
+ *
+ * Rules applied in order:
+ *  1. If the export has a `.php` property  → tree-sitter-php  shape → use it
+ *  2. If the export has a `.default`        → ESM-in-CJS shape    → use it
+ *  3. Otherwise the export IS the language object already
+ */
+function resolveLanguage(raw, pkgName) {
+    if (raw && typeof raw === 'object' && raw.php) {
+        // tree-sitter-php: { php: <lang>, php_only: <lang> }
+        return raw.php;
+    }
+    if (raw && typeof raw === 'object' && typeof raw.default !== 'undefined') {
+        // tree-sitter-c (ESM default re-exported into CJS): { default: <lang> }
+        return raw.default;
+    }
+    // tree-sitter-cpp, go, python, rust, dart — binding IS the language
+    return raw;
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const targetArg    = process.argv[2];
+let BASE_OUTPUT_DIR = targetArg
+    ? resolveHome(targetArg)
+    : path.join(process.cwd(), '.docs_output');
 
 if (!fs.existsSync(BASE_OUTPUT_DIR)) {
     fs.mkdirSync(BASE_OUTPUT_DIR, { recursive: true });
 }
 
-const ROOT_DIR = process.cwd();
+const ROOT_DIR    = process.cwd();
 const PROJECT_NAME = path.basename(ROOT_DIR);
 const OBSIDIAN_VAULT_NAME = "Codes Snippets Flashcards Diagrams";
 
-// ⚡ ADDED: Added '.rs' to the search matcher extension pool
 const files = globSync('**/*.{c,cpp,h,hpp,php,go,py,dart,rs}', {
     ignore: [
-        'node_modules/**', 'dist/**', 'build/**', '.dart_tool/**', 
-        '.docs_output/**', 'venv/**', '.git/**', 'target/**' // Added rust 'target' build folder to ignore list
-    ]
+        'node_modules/**', 'dist/**', 'build/**',
+        '.dart_tool/**', '.docs_output/**',
+        'venv/**', '.git/**', 'target/**',
+    ],
 });
 
 if (files.length === 0) {
@@ -45,94 +95,147 @@ if (files.length === 0) {
     process.exit(0);
 }
 
-// ⚡ ADDED: Map .rs extension directly to the tree-sitter-rust npm language package
+/**
+ * Map each file extension to its npm grammar package name.
+ * @driftlog/tree-sitter-dart is the community package with correct peer-dep
+ * range for tree-sitter >=0.22 and working prebuilds.
+ */
 const LANGUAGE_PACKAGES = {
-    '.py': 'tree-sitter-python',
-    '.go': 'tree-sitter-go',
-    '.dart': 'tree-sitter-dart',
-    '.php': 'tree-sitter-php',
-    '.c': 'tree-sitter-c',
+    '.c'  : 'tree-sitter-c',
+    '.h'  : 'tree-sitter-c',
     '.cpp': 'tree-sitter-cpp',
-    '.h': 'tree-sitter-c',
     '.hpp': 'tree-sitter-cpp',
-    '.rs': 'tree-sitter-rust' 
+    '.php': 'tree-sitter-php',
+    '.go' : 'tree-sitter-go',
+    '.py' : 'tree-sitter-python',
+    '.rs' : 'tree-sitter-rust',
+    '.dart': '@driftlog/tree-sitter-dart',
 };
 
-const getStructuralLabel = (nodeType) => {
+// ---------------------------------------------------------------------------
+// Node-type → human label mapping
+// ---------------------------------------------------------------------------
+
+function getStructuralLabel(nodeType) {
     const type = nodeType.toLowerCase();
-    
-    // ⚡ UPDATED: Added rust tokens 'struct_item', 'enum_item', 'union_item', 'impl_item', and 'trait_item'
+
     if ([
-        'class_definition', 'struct_specifier', 'type_declaration', 
-        'trait_declaration', 'interface_declaration',
-        'struct_item', 'enum_item', 'union_item', 'impl_item', 'trait_item'
+        // C / C++
+        'struct_specifier', 'type_declaration',
+        // PHP / Go / generic OOP
+        'class_declaration', 'interface_declaration', 'trait_declaration',
+        // Python
+        'class_definition',
+        // Rust
+        'struct_item', 'enum_item', 'union_item', 'impl_item', 'trait_item',
+        // Dart
+        'class_definition_extends', 'mixin_declaration',
+        'extension_declaration', 'enum_declaration',
     ].includes(type)) {
-        // Distinguish implementation blocks visually if you prefer
-        if (type === 'impl_item') return 'Implementation';
-        return 'Class/Struct/Trait';
+        return type === 'impl_item' ? 'Implementation' : 'Class/Struct/Trait';
     }
-    
-    // ⚡ UPDATED: Added rust token 'function_item'
+
     if ([
-        'function_definition', 'method_declaration', 'method_definition', 
-        'function_declaration', 'function_item'
+        // C / C++ / Go
+        'function_definition', 'function_declaration',
+        // PHP / JS-like
+        'method_declaration', 'method_definition',
+        // Python
+        'function_definition',
+        // Rust
+        'function_item',
+        // Dart
+        'function_signature', 'method_signature',
     ].includes(type)) {
         return 'Routine';
     }
-    
-    if (['package_clause', 'namespace_definition', 'preproc_include', 'include_statement', 'mod_item', 'use_declaration'].includes(type)) {
+
+    if ([
+        // Go / C
+        'package_clause', 'preproc_include',
+        // PHP
+        'namespace_definition', 'include_statement',
+        // Rust
+        'mod_item', 'use_declaration',
+        // Dart
+        'import_specification', 'library_name',
+    ].includes(type)) {
         return 'Directive/Module';
     }
-    return null;
-};
 
-const fileOutlines = {};
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Main pipeline
+// ---------------------------------------------------------------------------
 
 function runPipeline() {
     const parser = new Parser();
 
-    console.log(`🤖 Initializing native AST mapping engines for [${PROJECT_NAME}]...`);
+    console.log(`🤖 Initialising native AST mapping engines for [${PROJECT_NAME}]...`);
 
-    const loadedLanguages = {};
+    // Cache resolved language objects so each grammar is loaded only once.
+    const languageCache = {};
+
+    const fileOutlines = {};
 
     for (const file of files) {
         const absolutePath = path.resolve(file).replace(/\\/g, '/');
         const relativePath = path.relative(ROOT_DIR, file).replace(/\\/g, '/');
-        const ext = path.extname(file).toLowerCase();
+        const ext          = path.extname(file).toLowerCase();
 
         const pkgName = LANGUAGE_PACKAGES[ext];
         if (!pkgName) continue;
 
         try {
-            if (!loadedLanguages[pkgName]) {
+            // ------------------------------------------------------------------
+            // 1. Load + normalise the grammar (cached per package name)
+            // ------------------------------------------------------------------
+            if (!languageCache[pkgName]) {
+                let raw;
                 try {
-                    loadedLanguages[pkgName] = require(pkgName);
+                    raw = require(pkgName);
                 } catch {
-                    const fallbackPath = path.join(ROOT_DIR, 'node_modules', pkgName);
-                    loadedLanguages[pkgName] = require(fallbackPath);
+                    // Fallback: resolve relative to the project's node_modules
+                    const fallback = path.join(ROOT_DIR, 'node_modules', pkgName);
+                    raw = require(fallback);
                 }
+                languageCache[pkgName] = resolveLanguage(raw, pkgName);
             }
 
-            parser.setLanguage(loadedLanguages[pkgName]);
-            const rawCode = fs.readFileSync(absolutePath, 'utf-8');
-            const tree = parser.parse(rawCode);
+            parser.setLanguage(languageCache[pkgName]);
 
-            let outlineLines = [];
-            
+            // ------------------------------------------------------------------
+            // 2. Parse the file
+            // ------------------------------------------------------------------
+            const rawCode = fs.readFileSync(absolutePath, 'utf-8');
+            const tree    = parser.parse(rawCode);
+
+            // ------------------------------------------------------------------
+            // 3. Walk the AST and collect outline lines
+            // ------------------------------------------------------------------
+            const outlineLines = [];
+
             function walk(node, level = 0) {
-                const gap = "  ".repeat(level);
-                const label = getStructuralLabel(node.type);
+                const indent = '  '.repeat(level);
+                const label  = getStructuralLabel(node.type);
                 let nextLevel = level;
 
                 if (label) {
-                    // Dynamic identifier fallback strategy
-                    const nameNode = node.childForFieldName('name') || node.childForFieldName('bounds') || node.child(1);
-                    let actualName = nameNode ? nameNode.text.split('\n')[0] : node.type;
-                    
-                    // Cleanup common trailing definition braces for Rust signatures
+                    const nameNode =
+                        node.childForFieldName('name') ||
+                        node.childForFieldName('bounds') ||
+                        node.child(1);
+
+                    let actualName = nameNode
+                        ? nameNode.text.split('\n')[0]
+                        : node.type;
+
+                    // Strip anything from the first brace onward (e.g. generic params)
                     actualName = actualName.split('{')[0].trim();
-                    
-                    outlineLines.push(`${gap}- [${label}] ${actualName}`);
+
+                    outlineLines.push(`${indent}- [${label}] ${actualName}`);
                     nextLevel = level + 1;
                 }
 
@@ -143,20 +246,19 @@ function runPipeline() {
 
             walk(tree.rootNode, 0);
 
+            // ------------------------------------------------------------------
+            // 4. Write per-file markdown document
+            // ------------------------------------------------------------------
             const markdownOutline = outlineLines.join('\n');
             fileOutlines[relativePath] = markdownOutline;
 
-            const blockOutline = outlineLines
-                .map(line => line.replace(/^(\s*)-\s*/, '$1'))
-                .join('\n');
-
-            const encodedVault = encodeURIComponent(OBSIDIAN_VAULT_NAME);
+            const encodedVault       = encodeURIComponent(OBSIDIAN_VAULT_NAME);
             const obsidianEscapedPath = `temp/` + absolutePath.replace(/\//g, '-s-') + '.md';
             const encodedObsidianPath = encodeURIComponent(obsidianEscapedPath);
 
             const obsidianUri = `obsidian://open?vault=${encodedVault}&file=${encodedObsidianPath}`;
-            const fileUri = `file://${absolutePath}`;
-            const vscodeUri = `vscode://file/${absolutePath}`;
+            const fileUri     = `file://${absolutePath}`;
+            const vscodeUri   = `vscode://file/${absolutePath}`;
 
             const markdownWrapper = `---
 project: "${PROJECT_NAME}"
@@ -181,28 +283,48 @@ ${markdownOutline || '*No trackable structures found inside this module.*'}
 `;
 
             const safeFileName = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
-            fs.writeFileSync(path.join(BASE_OUTPUT_DIR, safeFileName), markdownWrapper, 'utf-8');
+            fs.writeFileSync(
+                path.join(BASE_OUTPUT_DIR, safeFileName),
+                markdownWrapper,
+                'utf-8',
+            );
 
         } catch (err) {
-            console.error(`❌ Native Parse failed on target [${relativePath}]:`, err.message);
+            console.error(`❌ Parse failed [${relativePath}]: ${err.message}`);
         }
     }
 
-    let masterContent = `# Multi-Language Structural Catalog Blueprint Index\n\n## Polyglot Project Workspace Module Map\n`;
-    Object.keys(fileOutlines).forEach(relativePath => {
-        const safeFileName = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
+    // --------------------------------------------------------------------------
+    // 5. Write master index document
+    // --------------------------------------------------------------------------
+    let masterContent =
+        `# Multi-Language Structural Catalog Blueprint Index\n\n` +
+        `## Polyglot Project Workspace Module Map\n`;
+
+    for (const relativePath of Object.keys(fileOutlines)) {
+        const safeFileName    = relativePath.replace(/[\/\\:\*\?"<>\|]/g, '_') + '.md';
         const componentMdPath = path.join(BASE_OUTPUT_DIR, safeFileName);
-        const componentMdUri = `file://${path.resolve(componentMdPath).replace(/\\/g, '/')}`;
+        const componentMdUri  = `file://${path.resolve(componentMdPath).replace(/\\/g, '/')}`;
+
         const cleanBlockLines = fileOutlines[relativePath]
-            ? fileOutlines[relativePath].split('\n').map(line => line.replace(/^(\s*)-\s*/, '$1')).join('\n')
+            ? fileOutlines[relativePath]
+                .split('\n')
+                .map(line => line.replace(/^(\s*)-\s*/, '$1'))
+                .join('\n')
             : '// Empty Module Schema';
 
-        masterContent += `\n### 📄 Module Summary Mapping: \`${relativePath}\`\n* [Open Workspace View](${componentMdUri})\n\n#### Structural Architecture Profile\n${fileOutlines[relativePath] || '  * *Empty Module Details*'}\n\n\`\`\`outline\n${cleanBlockLines}\n\`\`\`\n\n--- \n`;
-    });
+        masterContent +=
+            `\n### 📄 Module Summary Mapping: \`${relativePath}\`\n` +
+            `* [Open Workspace View](${componentMdUri})\n\n` +
+            `#### Structural Architecture Profile\n` +
+            `${fileOutlines[relativePath] || '  * *Empty Module Details*'}\n\n` +
+            `\`\`\`outline\n${cleanBlockLines}\n\`\`\`\n\n---\n`;
+    }
 
     fs.writeFileSync(path.join(BASE_OUTPUT_DIR, 'DOC.md'), masterContent, 'utf-8');
+
     console.log('\n========= NODE-NATIVE AST GENERATOR COMPLETE =========');
-    console.log(`✔ Processed files across: C, C++, PHP, Go, Python, Dart, and Rust.`);
+    console.log('✔ Processed: C, C++, PHP, Go, Python, Dart, Rust  (tree-sitter only)');
 }
 
 runPipeline();
