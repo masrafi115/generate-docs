@@ -5,6 +5,6 @@ Obsidian and some of its useful plugin are required to see and visualize the doc
 
 
 ```bash
-chmod +x "/media/droidlinux/Personal Drive/Apps/CLI/generate-docs/generate-docs.mjs"
-sudo ln -s "/media/droidlinux/Personal Drive/Apps/CLI/generate-docs/generate-docs.mjs" /usr/local/bin/generate-docs-m
+chmod +x "generate-docs/generate-docs.mjs"
+sudo ln -s "generate-docs/generate-docs.mjs" /usr/local/bin/generate-docs-m
 ```
